@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__29d15dd0-6a28-462b-b564-f1d376b8f74c__list_workspaces",
+      "mcp__29d15dd0-6a28-462b-b564-f1d376b8f74c__describe_page_type",
+      "mcp__29d15dd0-6a28-462b-b564-f1d376b8f74c__describe_page_element",
+      "mcp__29d15dd0-6a28-462b-b564-f1d376b8f74c__list_pages_for_base"
+    ]
+  }
+}
