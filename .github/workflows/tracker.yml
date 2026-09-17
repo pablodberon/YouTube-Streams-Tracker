@@ -1,0 +1,45 @@
+name: YouTube Streams Tracker
+
+on:
+  schedule:
+    # Ventana activa: 09:00 a 01:59 hora Argentina (UTC-3) = 12:00 a 04:59 UTC,
+    # cruzando medianoche UTC (horas 12-23 y 0-4). Fuera de esa ventana no
+    # corre nada, para no gastar minutos/cuota de mas de noche.
+    # GitHub no garantiza intervalos menores a 5 minutos, y puede demorar
+    # el disparo en horarios de mucho uso de Actions. Dentro de cada
+    # disparo, el job corre el script 5 veces con pausas de ~60 segundos
+    # para acercarnos a una muestra por minuto en los streams en vivo.
+    - cron: "*/5 12-23,0-4 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: yt-tracker
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Medir streams (5 muestras, ~1 por minuto)
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+        run: |
+          set -e
+          for i in 1 2 3 4 5; do
+            echo "=== Corrida $i/5 ==="
+            python3 yt_tracker.py || echo "Corrida $i fallo, se sigue con la siguiente"
+            if [ "$i" -lt 5 ]; then
+              sleep 60
+            fi
+          done
