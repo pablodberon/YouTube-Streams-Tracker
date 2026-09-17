@@ -1,0 +1,5 @@
+# Copia este archivo como "yt_tracker.env" (en la misma carpeta que yt_tracker.py)
+# y completa los dos valores. NO lo compartas ni lo subas a ningun repo publico.
+
+YOUTUBE_API_KEY=PEGA_ACA_TU_API_KEY_DE_YOUTUBE
+AIRTABLE_TOKEN=PEGA_ACA_TU_PERSONAL_ACCESS_TOKEN_DE_AIRTABLE
