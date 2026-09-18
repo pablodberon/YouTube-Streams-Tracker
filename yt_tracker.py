@@ -10,13 +10,23 @@ del canal en ese momento. Guarda cada medicion como un registro nuevo en la tabl
 
 Frecuencia recomendada de ejecucion: cada 1 minuto (via tarea programada o un loop
 dentro de un job de GitHub Actions).
-El propio script decide cuanto medir cada video:
-  - Si el video esta EN VIVO       -> mide en cada corrida (cada ~1 min)
-  - Si esta OFFLINE / ENDED        -> mide como maximo cada 5 minutos
-Este throttling NO depende de ningun archivo local: consulta a la propia tabla
+El propio script decide cuanto medir cada video, para ahorrar cuota de YouTube:
+  - SCHEDULED (programado, todavia no arranco) -> no se mide (ni se le pide detalle
+    a la API) hasta 5 minutos antes de la hora de inicio programada.
+  - LIVE (en vivo)                             -> se mide en cada corrida (~1 min)
+  - ENDED (recien termino)                     -> se mide una ultima vez (para
+    guardar el cierre real: Actual End, vistas/likes finales) y a partir de ahi
+    nunca mas se vuelve a consultar ese video.
+  - OFFLINE (video comun, no-live)             -> se mide como maximo cada 5 min
+Ademas de la tabla Snapshots (por video), el script escribe en "Channel Snapshots"
+la suma de concurrentes de TODOS los lives simultaneos de cada canal, para poder
+armar un ranking diario por canal en la interfaz de Airtable.
+El throttling NO depende de ningun archivo local: consulta a la propia tabla
 Snapshots de Airtable cual fue la ultima medicion de cada video en los ultimos
-minutos. Por eso el script es "stateless" y funciona igual de bien corriendo en
-un runner efimero (GitHub Actions) que en una maquina que sigue prendida.
+minutos, y el propio campo "Status"/"Scheduled Start" del registro de Video en
+Airtable para decidir si vale la pena pedirle detalle a la API. Por eso el script
+es "stateless" y funciona igual de bien corriendo en un runner efimero (GitHub
+Actions) que en una maquina que sigue prendida.
 
 Requisitos:
   pip install requests
@@ -47,12 +57,15 @@ BASE_ID = "appFvqj21Yy73Bjcn"
 TBL_CHANNELS = "tblnRqTAN0fnm9ebE"
 TBL_VIDEOS = "tbl8JGhar3VxOinIB"
 TBL_SNAPSHOTS = "tblMGC70UgtS7NBWG"
+TBL_CHANNEL_SNAPSHOTS = "tblaJvXiDhGDODoX6"
 
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
 AIRTABLE_TOKEN = os.environ.get("AIRTABLE_TOKEN", "").strip()
 
-OFFLINE_MIN_INTERVAL_SECONDS = 5 * 60  # no medir offline mas seguido que esto
-MAX_UPLOADS_PER_CHANNEL_CHECK = 15     # cuantos items recientes de la playlist de uploads mirar
+OFFLINE_MIN_INTERVAL_SECONDS = 5 * 60     # no medir offline mas seguido que esto
+SCHEDULED_LOOKAHEAD_SECONDS = 5 * 60      # empezar a medir un scheduled recien 5 min antes
+ARGENTINA_UTC_OFFSET_HOURS = -3           # para calcular la fecha "local" del Channel Snapshot
+MAX_UPLOADS_PER_CHANNEL_CHECK = 15        # cuantos items recientes de la playlist de uploads mirar
 
 AIRTABLE_API = "https://api.airtable.com/v0"
 YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
@@ -198,7 +211,8 @@ def get_recent_video_ids_for_playlist(playlist_id, max_items=MAX_UPLOADS_PER_CHA
 
 
 def get_videos_details(video_ids):
-    """Devuelve dict videoId -> {status, concurrent, views, likes, comments, duration_min, title, published_at}"""
+    """Devuelve dict videoId -> {status, concurrent, views, likes, comments, duration_min,
+    title, published_at, channel_id, scheduled_start, actual_start, actual_end}"""
     details = {}
     for batch in chunked(video_ids, 50):
         data = yt_get(
@@ -213,6 +227,7 @@ def get_videos_details(video_ids):
             live = item.get("liveStreamingDetails", {})
 
             broadcast = snippet.get("liveBroadcastContent", "none")  # live | upcoming | none
+            scheduled_start = live.get("scheduledStartTime")
             actual_start = live.get("actualStartTime")
             actual_end = live.get("actualEndTime")
 
@@ -220,7 +235,7 @@ def get_videos_details(video_ids):
                 status = "Live"
             elif actual_end:
                 status = "Ended"
-            elif broadcast == "upcoming":
+            elif broadcast == "upcoming" or scheduled_start:
                 status = "Scheduled"
             else:
                 status = "Offline"
@@ -256,6 +271,9 @@ def get_videos_details(video_ids):
                 "title": snippet.get("title"),
                 "published_at": snippet.get("publishedAt"),
                 "channel_id": snippet.get("channelId"),
+                "scheduled_start": scheduled_start,
+                "actual_start": actual_start,
+                "actual_end": actual_end,
             }
     return details
 
@@ -357,6 +375,12 @@ def main():
             }
             if d.get("published_at"):
                 fields["Published At"] = d["published_at"]
+            if d.get("scheduled_start"):
+                fields["Scheduled Start"] = d["scheduled_start"]
+            if d.get("actual_start"):
+                fields["Actual Start"] = d["actual_start"]
+            if d.get("actual_end"):
+                fields["Actual End"] = d["actual_end"]
             if channel_record:
                 fields["Channel"] = [channel_record["id"]]
             records_to_create.append({"fields": fields})
@@ -385,19 +409,45 @@ def main():
     if channel_updates:
         airtable_update(TBL_CHANNELS, channel_updates)
 
-    # 3) Medir TODOS los videos existentes (manuales + auto)
+    # 3) Decidir a que videos vale la pena pedirle detalle a YouTube esta corrida.
+    #    Ahorro de cuota:
+    #      - Los que ya estan "Ended" nunca se vuelven a consultar.
+    #      - Los "Scheduled" con inicio a mas de 5 minutos no se consultan todavia
+    #        (ya tenemos guardada su fecha de inicio de una corrida anterior).
     all_video_ids = list(existing_video_ids.keys())
     if not all_video_ids:
         print("No hay videos para medir todavia.")
         return
 
-    details = get_videos_details(all_video_ids)
+    video_ids_to_check = []
+    for vid, video_rec in existing_video_ids.items():
+        cached_status = video_rec["fields"].get("Status")
+        if cached_status == "Ended":
+            continue  # ya termino, no se vuelve a medir nunca mas
+        if cached_status == "Scheduled":
+            cached_start = video_rec["fields"].get("Scheduled Start")
+            if cached_start:
+                start_dt = _parse_airtable_timestamp(cached_start)
+                if start_dt is not None:
+                    seconds_to_start = start_dt.timestamp() - now_epoch
+                    if seconds_to_start > SCHEDULED_LOOKAHEAD_SECONDS:
+                        continue  # todavia falta demasiado, no gastamos cuota
+        video_ids_to_check.append(vid)
+
+    if not video_ids_to_check:
+        print("Ningun video requiere chequeo esta corrida (todos Ended o Scheduled lejano).")
+        return
+
+    details = get_videos_details(video_ids_to_check)
     last_snapshot_epoch_by_record_id = get_last_snapshot_epoch_by_video_record_id()
 
     video_status_updates = []
     snapshot_records = []
+    # channelId (de YouTube) -> {"concurrent": total, "live_count": n}
+    channel_live_totals = {}
 
-    for vid, video_rec in existing_video_ids.items():
+    for vid in video_ids_to_check:
+        video_rec = existing_video_ids[vid]
         d = details.get(vid)
         if not d:
             continue
@@ -415,12 +465,20 @@ def main():
                         subs = info["subscriber_count"]
                         break
 
+        # Throttling de mediciones segun el estado del video
         should_snapshot = False
-        last_ts = last_snapshot_epoch_by_record_id.get(video_rec["id"])
-
         if status == "Live":
             should_snapshot = True
-        else:
+        elif status == "Ended":
+            # Ultima medicion: se hace una sola vez, en la corrida donde se detecta
+            # el pase a Ended (porque el filtro de arriba ya excluye a los que ya
+            # estaban Ended en Airtable). A partir de la proxima corrida, no se
+            # vuelve a chequear este video.
+            should_snapshot = True
+        elif status == "Scheduled":
+            should_snapshot = False  # nunca se mide mientras esta programado
+        else:  # Offline (video comun, no-live)
+            last_ts = last_snapshot_epoch_by_record_id.get(video_rec["id"])
             if last_ts is None or (now_epoch - last_ts) >= OFFLINE_MIN_INTERVAL_SECONDS:
                 should_snapshot = True
 
@@ -446,9 +504,33 @@ def main():
             snapshot_records.append({"fields": snapshot_fields})
             last_snapshot_epoch_by_record_id[video_rec["id"]] = now_epoch
 
+        # Acumular concurrentes por canal (para el ranking diario), solo lo que
+        # esta en vivo AHORA en esta corrida.
+        if status == "Live" and channel_id_for_video in channels_info:
+            bucket = channel_live_totals.setdefault(
+                channel_id_for_video, {"concurrent": 0, "live_count": 0}
+            )
+            bucket["concurrent"] += d.get("concurrent") or 0
+            bucket["live_count"] += 1
+
+        # Preparar update del registro de Video (status + fechas + concurrentes actuales)
+        video_fields_update = {}
         current_status_in_airtable = video_rec["fields"].get("Status")
         if current_status_in_airtable != status:
-            video_status_updates.append({"id": video_rec["id"], "fields": {"Status": status}})
+            video_fields_update["Status"] = status
+        if d.get("scheduled_start") and video_rec["fields"].get("Scheduled Start") != d["scheduled_start"]:
+            video_fields_update["Scheduled Start"] = d["scheduled_start"]
+        if d.get("actual_start") and video_rec["fields"].get("Actual Start") != d["actual_start"]:
+            video_fields_update["Actual Start"] = d["actual_start"]
+        if d.get("actual_end") and video_rec["fields"].get("Actual End") != d["actual_end"]:
+            video_fields_update["Actual End"] = d["actual_end"]
+
+        new_current_concurrent = d.get("concurrent") if status == "Live" else 0
+        if video_rec["fields"].get("Current Concurrent Viewers") != new_current_concurrent:
+            video_fields_update["Current Concurrent Viewers"] = new_current_concurrent
+
+        if video_fields_update:
+            video_status_updates.append({"id": video_rec["id"], "fields": video_fields_update})
 
     if snapshot_records:
         airtable_create(TBL_SNAPSHOTS, snapshot_records)
@@ -458,6 +540,30 @@ def main():
 
     if video_status_updates:
         airtable_update(TBL_VIDEOS, video_status_updates)
+
+    # 4) Channel Snapshots: concurrentes totales por canal (suma de todos sus
+    #    lives simultaneos ahora mismo), para el ranking diario.
+    if channel_live_totals:
+        local_date = (now + datetime.timedelta(hours=ARGENTINA_UTC_OFFSET_HOURS)).strftime("%Y-%m-%d")
+        channel_snapshot_records = []
+        for cid, totals in channel_live_totals.items():
+            channel_record = channel_record_by_id.get(cid)
+            if not channel_record:
+                continue
+            channel_snapshot_records.append(
+                {
+                    "fields": {
+                        "Channel": [channel_record["id"]],
+                        "Timestamp": now_iso,
+                        "Date": local_date,
+                        "Total Concurrent Viewers": totals["concurrent"],
+                        "Live Videos Count": totals["live_count"],
+                    }
+                }
+            )
+        if channel_snapshot_records:
+            airtable_create(TBL_CHANNEL_SNAPSHOTS, channel_snapshot_records)
+            print(f"Channel snapshots creados: {len(channel_snapshot_records)}")
 
 
 if __name__ == "__main__":
