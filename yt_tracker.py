@@ -261,6 +261,13 @@ def get_videos_details(video_ids):
                 except Exception:
                     duration_min = None
 
+            thumbnails = snippet.get("thumbnails", {}) or {}
+            thumbnail_url = None
+            for quality in ("maxres", "standard", "high", "medium", "default"):
+                if quality in thumbnails:
+                    thumbnail_url = thumbnails[quality].get("url")
+                    break
+
             details[vid] = {
                 "status": status,
                 "concurrent": concurrent,
@@ -274,6 +281,7 @@ def get_videos_details(video_ids):
                 "scheduled_start": scheduled_start,
                 "actual_start": actual_start,
                 "actual_end": actual_end,
+                "thumbnail_url": thumbnail_url,
             }
     return details
 
@@ -528,6 +536,22 @@ def main():
         new_current_concurrent = d.get("concurrent") if status == "Live" else 0
         if video_rec["fields"].get("Current Concurrent Viewers") != new_current_concurrent:
             video_fields_update["Current Concurrent Viewers"] = new_current_concurrent
+
+        # Pico de concurrentes en tiempo real (permanente: no depende de la tabla
+        # Snapshots, asi que sobrevive a la purga nocturna). Se actualiza solo
+        # mientras esta en vivo, cada vez que se supera el maximo anterior.
+        if status == "Live" and d.get("concurrent") is not None:
+            current_peak = video_rec["fields"].get("Peak Concurrents")
+            if current_peak is None or d["concurrent"] > current_peak:
+                video_fields_update["Peak Concurrents"] = d["concurrent"]
+
+                actual_start_str = d.get("actual_start") or video_rec["fields"].get("Actual Start")
+                start_dt = _parse_airtable_timestamp(actual_start_str) if actual_start_str else None
+                if start_dt is not None:
+                    video_fields_update["Peak Moment (min)"] = round((now_epoch - start_dt.timestamp()) / 60.0, 1)
+
+                if d.get("thumbnail_url"):
+                    video_fields_update["Peak Screenshot"] = [{"url": d["thumbnail_url"]}]
 
         if video_fields_update:
             video_status_updates.append({"id": video_rec["id"], "fields": video_fields_update})
