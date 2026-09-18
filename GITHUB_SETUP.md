@@ -1,3 +1,38 @@
+> **Actualización:** se agregó un segundo workflow, `yt_daily_consolidate.py`,
+> que corre una vez por día (4am hora Argentina) y hace 2 cosas: (1) guarda en
+> cada Video un resumen permanente del stream (promedio de concurrentes, vistas
+> finales, duración promedio estimada, suscriptores netos, y 2 gráficos como
+> imagen) y (2) borra todos los registros de la tabla Snapshots para liberar
+> espacio. El pico de concurrentes (Peak Concurrents/Peak Moment/Peak
+> Screenshot) se calcula aparte, en tiempo real, dentro de `yt_tracker.py`.
+>
+> Si ya tenías el repo funcionando, agregá los archivos nuevos y pusheá:
+> ```bash
+> git add yt_tracker.py yt_daily_consolidate.py requirements.txt .github/workflows/daily_consolidate.yml
+> git commit -m "Consolidacion diaria + purga de Snapshots + pico en tiempo real"
+> git push
+> ```
+> No hace falta tocar Secrets (usa el mismo `AIRTABLE_TOKEN`).
+>
+> **Dos cosas para tener en cuenta con esto:**
+> 1. **"Duración promedio de visualización" es una estimación**, no el dato
+>    oficial de YouTube Analytics (ese solo está disponible vía YouTube
+>    Analytics API, y únicamente para canales propios). Se calcula como
+>    minutos-espectador totales (estimados a partir de las muestras de
+>    concurrentes) dividido las vistas finales — es la mejor aproximación
+>    posible con datos públicos, pero no es exacta.
+> 2. **El "Peak Screenshot" es el thumbnail que YouTube va actualizando durante
+>    la transmisión**, capturado en el momento en que se detecta un nuevo pico
+>    — no es un frame exacto al segundo del pico, sino la imagen más cercana
+>    disponible públicamente (se actualiza aprox. cada 1 minuto mientras está
+>    en vivo).
+> 3. **La purga diaria puede tardar horas si el volumen es grande** (Airtable
+>    solo permite borrar 10 registros por llamada). Con ~450.000 registros/día
+>    calculá algo así como 1-3 horas solo para el borrado. Por eso se programó
+>    a las 4am, con margen hasta que el tracker retoma a las 9am. Si alguna vez
+>    ves que no llega a terminar a tiempo, avisame y ajustamos el horario o el
+>    volumen de canales monitoreados.
+
 # Desplegar el tracker en GitHub Actions (sin depender de tu máquina)
 
 Con esto el tracker corre solo, en los servidores de GitHub, sin que tengas que tener
