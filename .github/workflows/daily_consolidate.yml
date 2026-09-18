@@ -1,0 +1,37 @@
+name: YouTube Streams - Consolidacion diaria
+
+on:
+  schedule:
+    # 07:00 UTC = 04:00 hora Argentina (UTC-3). Corre 1 vez por dia, antes de
+    # que el tracker retome a las 09:00 ART (12:00 UTC), dejando ~5 horas de
+    # margen incluso si la consolidacion/purga tarda varias horas por el
+    # volumen de registros.
+    - cron: "0 7 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: yt-daily-consolidate
+  cancel-in-progress: false
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-latest
+    # Con mucho volumen (cientos de miles de snapshots/dia) el borrado puede
+    # tardar bastante porque Airtable solo permite borrar 10 registros por
+    # llamada. Se deja un timeout generoso; si tu volumen es menor esto
+    # termina mucho antes.
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Consolidar y purgar Snapshots
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+        run: python3 yt_daily_consolidate.py
