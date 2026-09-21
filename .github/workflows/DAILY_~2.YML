@@ -1,0 +1,35 @@
+name: YouTube Streams - Reporte diario por mail
+
+on:
+  schedule:
+    # 06:00 UTC = 03:00 hora Argentina (UTC-3). Corre ANTES que la
+    # consolidacion/purga de las 4am (07:00 UTC), asi todavia puede leer los
+    # Snapshots crudos de la jornada que acaba de terminar.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: yt-daily-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Generar y enviar el reporte diario
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          REPORT_RECIPIENTS: ${{ secrets.REPORT_RECIPIENTS }}
+        run: python3 yt_daily_report.py
