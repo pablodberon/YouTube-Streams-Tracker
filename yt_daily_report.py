@@ -309,6 +309,15 @@ def fmt_num(n, decimals=0):
     return f"{n:,.{decimals}f}".replace(",", ".")
 
 
+# Paleta ESPN
+C_RED = "#FF2925"
+C_WHITE = "#FFFFFF"
+C_GRAY = "#DADADA"
+C_BLACK = "#231F20"
+
+FONT = "'Helvetica Neue', Helvetica, Arial, sans-serif"
+
+
 def build_html(yday, today, stream_rows, channels_list):
     channels_sorted = sorted(
         [c for c in channels_list if c["avg_concurrents"] is not None],
@@ -321,67 +330,126 @@ def build_html(yday, today, stream_rows, channels_list):
         reverse=True,
     )
 
-    th = "padding:6px 10px;border-bottom:2px solid #333;text-align:left;font-size:13px;"
-    td = "padding:6px 10px;border-bottom:1px solid #ddd;font-size:13px;"
-    h2 = "font-family:Arial,sans-serif;color:#111;margin-top:28px;"
-    table_style = "border-collapse:collapse;width:100%;font-family:Arial,sans-serif;margin-top:8px;"
+    th = (
+        f"padding:9px 12px;background:{C_BLACK};color:{C_WHITE};text-align:left;"
+        f"font-size:11px;text-transform:uppercase;letter-spacing:0.5px;font-weight:bold;"
+    )
+    h2 = (
+        f"font-family:{FONT};color:{C_BLACK};text-transform:uppercase;letter-spacing:1px;"
+        f"font-size:16px;font-weight:bold;margin:30px 0 4px 0;"
+        f"border-bottom:3px solid {C_RED};padding-bottom:6px;"
+    )
+    table_style = f"border-collapse:collapse;width:100%;font-family:{FONT};margin-top:6px;"
 
-    html = [f"<div style='font-family:Arial,sans-serif;color:#111;'>"]
-    html.append(
-        f"<p>Reporte de streams de la jornada <b>{yday.strftime('%d/%m/%Y')} 09:00</b> "
-        f"a <b>{today.strftime('%d/%m/%Y')} 02:00</b> (hora Argentina).</p>"
+    def row_style(i, extra=""):
+        bg = C_WHITE if i % 2 == 0 else "#F2F2F2"
+        border = f"border-left:4px solid {C_RED};" if i <= 3 else "border-left:4px solid transparent;"
+        return f"background:{bg};{border}{extra}"
+
+    def td(bold=False):
+        weight = "font-weight:bold;" if bold else ""
+        return f"padding:8px 12px;font-size:13px;color:{C_BLACK};border-bottom:1px solid {C_GRAY};{weight}"
+
+    def fmt_net(net):
+        if net is None:
+            return "-"
+        if net > 0:
+            return f"<span style='color:{C_RED};font-weight:bold;'>+{fmt_num(net)}</span>"
+        if net < 0:
+            return f"<span style='color:#555;font-weight:bold;'>{fmt_num(net)}</span>"
+        return fmt_num(net)
+
+    parts = []
+
+    # Banner superior estilo ESPN
+    parts.append(
+        f"<div style='font-family:{FONT};max-width:700px;margin:0 auto;background:{C_WHITE};'>"
+        f"<table role='presentation' width='100%' style='border-collapse:collapse;'>"
+        f"<tr><td style='background:{C_BLACK};padding:22px 24px;'>"
+        f"<div style='color:{C_RED};font-size:22px;font-weight:bold;text-transform:uppercase;"
+        f"letter-spacing:1px;'>Reporte Diario</div>"
+        f"<div style='color:{C_WHITE};font-size:13px;text-transform:uppercase;letter-spacing:0.5px;"
+        f"margin-top:4px;'>Streams &middot; {yday.strftime('%d/%m/%Y')} 09:00 &rarr; "
+        f"{today.strftime('%d/%m/%Y')} 02:00 (ART)</div>"
+        f"</td></tr>"
+        f"<tr><td style='background:{C_RED};height:6px;line-height:6px;font-size:1px;'>&nbsp;</td></tr>"
+        f"</table>"
+        f"<div style='padding:20px 24px;'>"
     )
 
     if not stream_rows:
-        html.append("<p><i>No hubo transmisiones en vivo durante esta jornada.</i></p></div>")
-        return "".join(html)
+        parts.append(
+            f"<p style='font-size:14px;color:{C_BLACK};font-style:italic;'>"
+            f"No hubo transmisiones en vivo durante esta jornada.</p>"
+        )
+        parts.append("</div></div>")
+        return "".join(parts)
 
     # Ranking de canales
-    html.append(f"<h2 style='{h2}'>Ranking de canales (por Avg. Concurrents)</h2>")
-    html.append(f"<table style='{table_style}'><tr>"
-                f"<th style='{th}'>#</th><th style='{th}'>Canal</th>"
-                f"<th style='{th}'>Avg. Concurrents</th><th style='{th}'>Suscriptores netos</th>"
-                f"</tr>")
+    parts.append(f"<h2 style='{h2}'>Ranking de canales</h2>")
+    parts.append(
+        f"<table style='{table_style}'><tr>"
+        f"<th style='{th}'>#</th><th style='{th}'>Canal</th>"
+        f"<th style='{th}'>Avg. Concurrents</th><th style='{th}'>Suscriptores netos</th></tr>"
+    )
     for i, c in enumerate(channels_sorted, 1):
-        net = c["net_subscribers"]
-        net_str = fmt_num(net) if net is None or net <= 0 else f"+{fmt_num(net)}"
-        html.append(
-            f"<tr><td style='{td}'>{i}</td><td style='{td}'>{c['channel_name']}</td>"
-            f"<td style='{td}'>{fmt_num(c['avg_concurrents'])}</td>"
-            f"<td style='{td}'>{net_str}</td></tr>"
+        parts.append(
+            f"<tr style='{row_style(i)}'>"
+            f"<td style='{td(bold=i<=3)}'>{i}</td><td style='{td(bold=i<=3)}'>{c['channel_name']}</td>"
+            f"<td style='{td(bold=i<=3)}'>{fmt_num(c['avg_concurrents'])}</td>"
+            f"<td style='{td()}'>{fmt_net(c['net_subscribers'])}</td></tr>"
         )
-    html.append("</table>")
+    parts.append("</table>")
 
-    # Ranking de streams
-    html.append(f"<h2 style='{h2}'>Ranking de streams (por Avg. Concurrents)</h2>")
-    html.append(f"<table style='{table_style}'><tr>"
-                f"<th style='{th}'>#</th><th style='{th}'>Canal</th><th style='{th}'>Stream</th>"
-                f"<th style='{th}'>Avg. Concurrents</th><th style='{th}'>Peak Concurrents</th>"
-                f"<th style='{th}'>Views</th></tr>")
-    for i, r in enumerate(streams_sorted, 1):
-        html.append(
-            f"<tr><td style='{td}'>{i}</td><td style='{td}'>{r['channel_name']}</td>"
-            f"<td style='{td}'>{r['title']}</td><td style='{td}'>{fmt_num(r['avg_concurrents'])}</td>"
-            f"<td style='{td}'>{fmt_num(r['peak_concurrents'])}</td><td style='{td}'>{fmt_num(r['views'])}</td></tr>"
+    # Ranking de streams (Top 10, para no sobrecargar el mail)
+    parts.append(f"<h2 style='{h2}'>Ranking de streams (Top 10)</h2>")
+    if len(streams_sorted) > 10:
+        parts.append(
+            f"<div style='font-size:11px;color:#888;margin-bottom:2px;'>"
+            f"Mostrando los 10 mejores de {len(streams_sorted)} streams totales de la jornada.</div>"
         )
-    html.append("</table>")
+    parts.append(
+        f"<table style='{table_style}'><tr>"
+        f"<th style='{th}'>#</th><th style='{th}'>Canal</th><th style='{th}'>Stream</th>"
+        f"<th style='{th}'>Avg. Concurrents</th><th style='{th}'>Peak Concurrents</th>"
+        f"<th style='{th}'>Views</th></tr>"
+    )
+    for i, r in enumerate(streams_sorted[:10], 1):
+        parts.append(
+            f"<tr style='{row_style(i)}'>"
+            f"<td style='{td(bold=i<=3)}'>{i}</td><td style='{td()}'>{r['channel_name']}</td>"
+            f"<td style='{td(bold=i<=3)}'>{r['title']}</td><td style='{td(bold=i<=3)}'>{fmt_num(r['avg_concurrents'])}</td>"
+            f"<td style='{td()}'>{fmt_num(r['peak_concurrents'])}</td><td style='{td()}'>{fmt_num(r['views'])}</td></tr>"
+        )
+    parts.append("</table>")
 
     # Detalle por canal
-    html.append(f"<h2 style='{h2}'>Detalle por canal</h2>")
+    parts.append(f"<h2 style='{h2}'>Detalle por canal</h2>")
     for c in channels_sorted:
-        html.append(f"<h3 style='font-family:Arial,sans-serif;margin-top:18px;'>{c['channel_name']}</h3>")
-        html.append(f"<table style='{table_style}'><tr>"
-                    f"<th style='{th}'>Stream</th><th style='{th}'>Avg. Concurrents</th>"
-                    f"<th style='{th}'>Peak Concurrents</th><th style='{th}'>Views</th></tr>")
-        for r in sorted(c["streams"], key=lambda r: (r["avg_concurrents"] or 0), reverse=True):
-            html.append(
-                f"<tr><td style='{td}'>{r['title']}</td><td style='{td}'>{fmt_num(r['avg_concurrents'])}</td>"
-                f"<td style='{td}'>{fmt_num(r['peak_concurrents'])}</td><td style='{td}'>{fmt_num(r['views'])}</td></tr>"
+        parts.append(
+            f"<div style='margin-top:20px;padding:4px 0 8px 10px;border-left:4px solid {C_RED};'>"
+            f"<span style='font-family:{FONT};color:{C_BLACK};text-transform:uppercase;"
+            f"font-weight:bold;font-size:14px;letter-spacing:0.5px;'>{c['channel_name']}</span></div>"
+        )
+        parts.append(
+            f"<table style='{table_style}'><tr>"
+            f"<th style='{th}'>Stream</th><th style='{th}'>Avg. Concurrents</th>"
+            f"<th style='{th}'>Peak Concurrents</th><th style='{th}'>Views</th></tr>"
+        )
+        for i, r in enumerate(sorted(c["streams"], key=lambda r: (r["avg_concurrents"] or 0), reverse=True), 1):
+            parts.append(
+                f"<tr style='{row_style(i)}'>"
+                f"<td style='{td()}'>{r['title']}</td><td style='{td()}'>{fmt_num(r['avg_concurrents'])}</td>"
+                f"<td style='{td()}'>{fmt_num(r['peak_concurrents'])}</td><td style='{td()}'>{fmt_num(r['views'])}</td></tr>"
             )
-        html.append("</table>")
+        parts.append("</table>")
 
-    html.append("</div>")
-    return "".join(html)
+    parts.append(
+        f"<div style='margin-top:28px;padding-top:12px;border-top:1px solid {C_GRAY};"
+        f"font-size:11px;color:#888;'>Generado automáticamente &middot; YouTube Streams Tracker</div>"
+    )
+    parts.append("</div></div>")
+    return "".join(parts)
 
 
 def send_email(yday, today, stream_rows, channels_list, channels_agg):
