@@ -24,8 +24,17 @@ Para cada stream calcula:
 Para cada canal (agregando sus streams de la jornada):
   - Avg Concurrents: promedio simple de los Avg Concurrents (recortados) de
     sus streams.
-  - Net Subscribers: suscriptores del canal al final de la jornada menos al
-    inicio (puede ser negativo).
+  - Net Subscribers: "Subscribers (last)" (leido ahora, a las 3am, antes de la
+    consolidacion de las 4am) menos "Subscribers at Jornada Start" (un
+    checkpoint que yt_tracker.py fija una sola vez por dia, en su primera
+    corrida despues de las 09:00 ART). Mismo par de horas todos los dias, para
+    que el numero sea comparable dia a dia.
+    OJO: el conteo de suscriptores que expone la API publica de YouTube esta
+    REDONDEADO (no es el numero exacto que ve el dueno del canal en YouTube
+    Studio) y solo se actualiza cuando el valor real cruza el proximo escalon
+    de redondeo. Para canales de terceros no hay forma de evitar esto; si
+    alguno de estos canales es propio, se podria conectar la YouTube Analytics
+    API con OAuth para ese canal puntual y tener el numero exacto.
 
 El mail tiene 3 bloques: ranking de canales, ranking de streams (ambos
 ordenados por Avg Concurrents descendente), y despues el detalle stream por
@@ -199,11 +208,19 @@ def main():
         for cid in v["fields"].get("Channel") or []:
             channel_ids_needed.add(cid)
     channels_meta = {}
+    channels_subs_checkpoint = {}  # channel_record_id -> {"start": int|None, "now": int|None}
     if channel_ids_needed:
-        channel_records = airtable_list_all("tblnRqTAN0fnm9ebE", fields=["Channel Name"])
+        channel_records = airtable_list_all(
+            "tblnRqTAN0fnm9ebE",
+            fields=["Channel Name", "Subscribers at Jornada Start", "Subscribers (last)"],
+        )
         for c in channel_records:
             if c["id"] in channel_ids_needed:
                 channels_meta[c["id"]] = c["fields"].get("Channel Name", "(sin nombre)")
+                channels_subs_checkpoint[c["id"]] = {
+                    "start": c["fields"].get("Subscribers at Jornada Start"),
+                    "now": c["fields"].get("Subscribers (last)"),
+                }
 
     # 3) Snapshots de la jornada (una sola lectura grande, se agrupa despues)
     snap_formula = (
@@ -213,13 +230,12 @@ def main():
     snapshots = airtable_list_all(
         TBL_SNAPSHOTS,
         filter_formula=snap_formula,
-        fields=["Video", "Timestamp", "Concurrent Viewers", "Views", "Subscribers"],
+        fields=["Video", "Timestamp", "Concurrent Viewers", "Views"],
     )
     print(f"Snapshots en la jornada: {len(snapshots)}")
 
     points_by_video = defaultdict(list)     # video_record_id -> [(epoch, concurrent)]
     views_by_video = defaultdict(list)      # video_record_id -> [views,...]
-    subs_by_video = defaultdict(list)       # video_record_id -> [(epoch, subs)]
 
     for rec in snapshots:
         fields = rec["fields"]
@@ -236,11 +252,8 @@ def main():
             points_by_video[vid].append((epoch, fields["Concurrent Viewers"]))
         if fields.get("Views") is not None:
             views_by_video[vid].append(fields["Views"])
-        if fields.get("Subscribers") is not None:
-            subs_by_video[vid].append((epoch, fields["Subscribers"]))
 
     stream_rows = []
-    subs_points_by_channel = defaultdict(list)  # channel_record_id -> [(epoch, subs)]
 
     for vid, v in video_by_id.items():
         f = v["fields"]
@@ -259,9 +272,6 @@ def main():
         channel_links = f.get("Channel") or []
         channel_id = channel_links[0] if channel_links else None
         channel_name = channels_meta.get(channel_id, "(sin canal)")
-
-        if channel_id:
-            subs_points_by_channel[channel_id].extend(subs_by_video.get(vid, []))
 
         stream_rows.append(
             {
@@ -284,10 +294,15 @@ def main():
         avgs = [r["avg_concurrents"] for r in rows if r["avg_concurrents"] is not None]
         channel_avg = sum(avgs) / len(avgs) if avgs else None
 
-        subs_points = sorted(subs_points_by_channel.get(channel_id, []), key=lambda p: p[0])
-        net_subs = None
-        if len(subs_points) >= 2:
-            net_subs = subs_points[-1][1] - subs_points[0][1]
+        # Neto de suscriptores: checkpoint de inicio de jornada (~09:00 ART,
+        # fijado una vez por dia por yt_tracker.py) contra el valor actual
+        # (leido ahora, a las 3am, antes de que la consolidacion de las 4am
+        # haga nada). Mismo par de horas todos los dias, para que sea
+        # comparable dia a dia.
+        checkpoint = channels_subs_checkpoint.get(channel_id, {})
+        subs_start = checkpoint.get("start")
+        subs_now = checkpoint.get("now")
+        net_subs = (subs_now - subs_start) if (subs_start is not None and subs_now is not None) else None
 
         channels_agg[channel_id] = {
             "channel_name": rows[0]["channel_name"],
@@ -446,7 +461,11 @@ def build_html(yday, today, stream_rows, channels_list):
 
     parts.append(
         f"<div style='margin-top:28px;padding-top:12px;border-top:1px solid {C_GRAY};"
-        f"font-size:11px;color:#888;'>Generado automáticamente &middot; YouTube Streams Tracker</div>"
+        f"font-size:11px;color:#888;line-height:1.5;'>"
+        f"Suscriptores netos = valor actual (~3am) menos el valor al inicio de la jornada (~9am). "
+        f"El conteo de suscriptores de YouTube es público pero está redondeado por la plataforma "
+        f"(no es el número exacto de YouTube Studio) y avanza a saltos, no en tiempo real.<br>"
+        f"Generado automáticamente &middot; YouTube Streams Tracker</div>"
     )
     parts.append("</div></div>")
     return "".join(parts)
