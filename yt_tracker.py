@@ -332,6 +332,7 @@ def get_last_snapshot_epoch_by_video_record_id(lookback_minutes=15):
 def main():
     now = datetime.datetime.utcnow()
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    today_local_date_str = (now + datetime.timedelta(hours=ARGENTINA_UTC_OFFSET_HOURS)).strftime("%Y-%m-%d")
     now_epoch = now.replace(tzinfo=datetime.timezone.utc).timestamp()
 
     # 1) Canales activos
@@ -399,21 +400,25 @@ def main():
                 if vid:
                     existing_video_ids[vid] = rec
 
-    # actualizar Last Checked / Subscribers de canales
+    # actualizar Last Checked / Subscribers de canales, y fijar el checkpoint
+    # de "suscriptores al inicio de la jornada" la PRIMERA vez que se corre en
+    # el dia (hora Argentina). Ese checkpoint no se vuelve a tocar hasta el dia
+    # siguiente, asi el reporte de las 3am puede comparar siempre "inicio de
+    # jornada vs. ahora" de forma consistente, sin importar si justo hay un
+    # stream en vivo a esa hora o no.
     channel_updates = []
     for cid, rec in channel_record_by_id.items():
         info = channels_info.get(cid)
         if not info:
             continue
-        channel_updates.append(
-            {
-                "id": rec["id"],
-                "fields": {
-                    "Subscribers (last)": info["subscriber_count"],
-                    "Last Checked": now_iso,
-                },
-            }
-        )
+        fields_update = {
+            "Subscribers (last)": info["subscriber_count"],
+            "Last Checked": now_iso,
+        }
+        if rec["fields"].get("Jornada Start Date") != today_local_date_str:
+            fields_update["Subscribers at Jornada Start"] = info["subscriber_count"]
+            fields_update["Jornada Start Date"] = today_local_date_str
+        channel_updates.append({"id": rec["id"], "fields": fields_update})
     if channel_updates:
         airtable_update(TBL_CHANNELS, channel_updates)
 
