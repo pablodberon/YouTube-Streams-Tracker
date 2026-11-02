@@ -374,13 +374,24 @@ def main():
         records_to_create = []
         for vid, cid in new_video_ids_to_create:
             d = details_for_new.get(vid, {})
+            status = d.get("status", "Offline")
+            # No nos interesa el contenido on demand: si el item descubierto en
+            # la playlist de uploads no tiene datos de liveStreamingDetails
+            # (status "Offline"), no se crea el registro en Videos. Si mas
+            # adelante YouTube lo marca como Scheduled/Live/Ended, se va a
+            # volver a descubrir en una corrida futura (todavia no existe en
+            # existing_video_ids) y ahi si se crea. Esto evita que la tabla
+            # Videos se llene de videos on-demand que consumirian cuota de
+            # YouTube en cada corrida para siempre.
+            if status == "Offline":
+                continue
             channel_record = channel_record_by_id.get(cid)
             fields = {
                 "Video ID": vid,
                 "Title": d.get("title", ""),
                 "URL": f"https://www.youtube.com/watch?v={vid}",
                 "Source": "Auto (Channel)",
-                "Status": d.get("status", "Offline"),
+                "Status": status,
             }
             if d.get("published_at"):
                 fields["Published At"] = d["published_at"]
@@ -437,6 +448,14 @@ def main():
         cached_status = video_rec["fields"].get("Status")
         if cached_status == "Ended":
             continue  # ya termino, no se vuelve a medir nunca mas
+        if cached_status == "Offline" and video_rec["fields"].get("Source") == "Auto (Channel)":
+            # Salvaguarda: un video on-demand descubierto automaticamente desde
+            # un canal no deberia haber llegado a crearse (ver filtro en el
+            # paso de descubrimiento mas arriba), pero si por algun motivo ya
+            # existe un registro asi en la base (datos viejos, carrera entre
+            # corridas, etc.), no lo volvemos a chequear nunca mas: no es un
+            # stream y solo gastaria cuota de YouTube sin necesidad.
+            continue
         if cached_status == "Scheduled":
             cached_start = video_rec["fields"].get("Scheduled Start")
             if cached_start:
