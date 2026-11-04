@@ -1,3 +1,84 @@
+> **Actualización 3 (importante): el cron nativo de GitHub dejó de ser confiable.**
+> Detectamos que el disparador `schedule` de `tracker.yml` (el `*/5 12-23,0-4 * * *`)
+> empezó a saltear corridas por horas enteras (vimos huecos de 6-14 horas sin
+> ninguna ejecución, en vez de cada 5 minutos). Esto no es un bug nuestro: es un
+> comportamiento conocido y documentado de GitHub Actions — el evento `schedule`
+> es "best effort" y GitHub puede demorarlo o directamente saltearlo en períodos
+> de carga, sobre todo con intervalos tan frecuentes como cada 5 minutos. No hay
+> forma de arreglarlo desde el YAML.
+>
+> **Solución:** disparar el workflow desde afuera de GitHub, usando un servicio de
+> cron externo que llama a la API de GitHub (`workflow_dispatch`) cada 5 minutos.
+> Esa llamada SÍ es inmediata y confiable (no pasa por la cola interna de
+> `schedule`). `tracker.yml` ya tiene `workflow_dispatch: {}` habilitado, así que
+> no hace falta tocar el workflow — solo configurar el disparador externo:
+>
+> 1. **Crear un Personal Access Token (fine-grained) en GitHub**, solo para esto:
+>    - Entrá a https://github.com/settings/personal-access-tokens/new
+>    - "Resource owner": tu usuario. "Repository access": "Only select
+>      repositories" → elegí `YouTube-Streams-Tracker`.
+>    - En "Permissions" → "Repository permissions" → "Actions" → ponelo en
+>      **Read and write**.
+>    - Generá el token y copialo (empieza con `github_pat_...`). Es la única vez
+>      que se muestra completo.
+> 2. **Crear una cuenta gratis en https://cron-job.org** (no pide tarjeta).
+> 3. **Crear un cronjob nuevo** con estos datos:
+>    - URL: `https://api.github.com/repos/pablodberon/YouTube-Streams-Tracker/actions/workflows/tracker.yml/dispatches`
+>    - Método: `POST`
+>    - Request body (JSON): `{"ref":"main"}`
+>    - Headers:
+>      - `Authorization: Bearer TU_TOKEN_AQUI`
+>      - `Accept: application/vnd.github+json`
+>      - `Content-Type: application/json`
+>    - Schedule: cada 5 minutos, solo entre las 12:00 y 04:59 UTC (= 09:00 a
+>      01:59 ART) — cron-job.org permite restringir por horario del día.
+> 4. Guardá el cronjob y mirá en la pestaña **Actions** del repo: deberían
+>    empezar a aparecer corridas con el evento "workflow_dispatch" cada 5
+>    minutos, sin huecos.
+>
+> El disparador `schedule` original lo dejamos como respaldo (no molesta, y el
+> `concurrency` del workflow ya evita que se pisen dos corridas si llegan a
+> coincidir), pero el que de ahora en más hace el trabajo real es el cronjob
+> externo.
+
+> **Actualización 2:** se agregó `yt_daily_report.py`, que corre todos los días
+> a las 3am hora Argentina (06:00 UTC, ANTES de la purga de las 4am) y manda
+> por mail el ranking de canales, el ranking de streams y el detalle por canal
+> de la jornada 09:00→02:00 que acaba de terminar. Requiere 3 Secrets nuevos:
+>
+> 1. `GMAIL_ADDRESS` → la cuenta de Gmail que va a enviar el mail (puede ser
+>    una cuenta nueva, tipo `reportes.streams@gmail.com`, no hace falta que
+>    sea tu cuenta personal).
+> 2. `GMAIL_APP_PASSWORD` → una "contraseña de aplicación" de esa cuenta:
+>    - Entrá a https://myaccount.google.com/security
+>    - Activá la verificación en 2 pasos si no la tenés activada (es requisito
+>      para poder generar App Passwords).
+>    - Buscá "Contraseñas de aplicaciones" (o entrá directo a
+>      https://myaccount.google.com/apppasswords), creá una nueva, nombrala
+>      "YouTube Tracker" y copiá el código de 16 caracteres que te da.
+>    - **Importante:** si esa cuenta de Gmail es corporativa (de Disney) y no
+>      te deja activar verificación en 2 pasos o generar App Passwords porque
+>      la política de la organización lo bloquea, no vamos a poder usar este
+>      método — avisame y armamos la alternativa 100% en Airtable con Resend
+>      en vez de esto (ver más abajo).
+> 3. `REPORT_RECIPIENTS` → la lista de mails que reciben el reporte, separados
+>    por coma, por ejemplo: `pablo.d.beron@disney.com,otro@disney.com`. Para
+>    agregar o sacar destinatarios más adelante, solo hay que editar este
+>    Secret — no hace falta tocar código.
+>
+> Cargalos igual que los otros dos (Settings → Secrets and variables →
+> Actions → New repository secret) y pusheá `yt_daily_report.py` y
+> `.github/workflows/daily_report.yml`.
+>
+> **Si el Gmail corporativo no funciona:** la alternativa es armar este mismo
+> reporte 100% dentro de Airtable (Automations: trigger "At a scheduled time"
+> a las 3am ART + un script que arma los datos + `fetch()` a la API de Resend,
+> que es un servicio de mail transaccional con plan gratuito). Avisame si
+> llegás a ese punto y te lo armo — no requiere GitHub para nada en ese caso,
+> pero sí crear una cuenta gratuita en Resend, porque los scripts de Airtable
+> no pueden hablar SMTP (no pueden usar Gmail con contraseña de aplicación),
+> solo pueden llamar APIs por HTTP.
+
 > **Actualización:** se agregó un segundo workflow, `yt_daily_consolidate.py`,
 > que corre una vez por día (4am hora Argentina) y hace 2 cosas: (1) guarda en
 > cada Video un resumen permanente del stream (promedio de concurrentes, vistas
