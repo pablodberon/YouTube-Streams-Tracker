@@ -234,6 +234,35 @@ def get_recent_video_ids_for_playlist(playlist_id, max_items=MAX_UPLOADS_PER_CHA
     return video_ids
 
 
+def search_live_video_ids_for_channel(channel_id, event_type):
+    """Busca directamente streams (programados o en vivo) de un canal via
+    search.list con eventType, que es el equivalente oficial y exacto a lo que
+    YouTube muestra en la pestaña /streams del canal (a diferencia de la
+    playlist de uploads, que mezcla todo el contenido y puede "enterrar" un
+    stream bajo subidas normales). Esto SI es confiable al 100%, pero cuesta
+    100 unidades de cuota por llamada (vs. 1 de playlistItems/videos), asi que
+    solo se usa como reconciliacion 1 vez por dia por canal, nunca en cada
+    corrida."""
+    video_ids = []
+    try:
+        data = yt_get(
+            "search",
+            part="id",
+            channelId=channel_id,
+            type="video",
+            eventType=event_type,
+            order="date",
+            maxResults=50,
+        )
+    except requests.HTTPError:
+        return video_ids
+    for item in data.get("items", []):
+        vid = item.get("id", {}).get("videoId")
+        if vid:
+            video_ids.append(vid)
+    return video_ids
+
+
 def get_videos_details(video_ids):
     """Devuelve dict videoId -> {status, concurrent, views, likes, comments, duration_min,
     title, published_at, channel_id, scheduled_start, actual_start, actual_end}"""
@@ -381,7 +410,9 @@ def main():
     }
 
     new_video_ids_to_create = []
+    queued_video_ids_this_run = set()
     channels_deep_scanned_this_run = set()
+    channels_reconciled_today = set()
     for cid in channel_ids:
         info = channels_info.get(cid)
         if not info:
@@ -406,8 +437,22 @@ def main():
             continue
         if needs_deep_scan:
             channels_deep_scanned_this_run.add(cid)
+
+        # Red de seguridad final, 1 vez por dia por canal: reconciliar contra
+        # lo que search.list (eventType upcoming/live) devuelve, que es el
+        # equivalente oficial exacto a la pestaña /streams del canal. Mas caro
+        # (100 unidades por llamada) que mirar la playlist de uploads, por eso
+        # no se hace en cada corrida, pero garantiza que ningun stream quede
+        # sin detectar sin importar cuanto contenido normal suba el canal.
+        last_reconcile = channel_record["fields"].get("Last Reconcile Date") if channel_record else None
+        if last_reconcile != today_local_date_str:
+            for event_type in ("upcoming", "live"):
+                recent_ids.extend(search_live_video_ids_for_channel(cid, event_type))
+            channels_reconciled_today.add(cid)
+
         for vid in recent_ids:
-            if vid not in existing_video_ids:
+            if vid not in existing_video_ids and vid not in queued_video_ids_this_run:
+                queued_video_ids_this_run.add(vid)
                 new_video_ids_to_create.append((vid, cid))
 
     if new_video_ids_to_create:
@@ -472,6 +517,8 @@ def main():
             fields_update["Jornada Start Date"] = today_local_date_str
         if cid in channels_deep_scanned_this_run:
             fields_update["Last Deep Scan"] = now_iso
+        if cid in channels_reconciled_today:
+            fields_update["Last Reconcile Date"] = today_local_date_str
         channel_updates.append({"id": rec["id"], "fields": fields_update})
     if channel_updates:
         airtable_update(TBL_CHANNELS, channel_updates)
