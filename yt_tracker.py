@@ -65,7 +65,18 @@ AIRTABLE_TOKEN = os.environ.get("AIRTABLE_TOKEN", "").strip()
 OFFLINE_MIN_INTERVAL_SECONDS = 5 * 60     # no medir offline mas seguido que esto
 SCHEDULED_LOOKAHEAD_SECONDS = 5 * 60      # empezar a medir un scheduled recien 5 min antes
 ARGENTINA_UTC_OFFSET_HOURS = -3           # para calcular la fecha "local" del Channel Snapshot
-MAX_UPLOADS_PER_CHANNEL_CHECK = 15        # cuantos items recientes de la playlist de uploads mirar
+MAX_UPLOADS_PER_CHANNEL_CHECK = 50        # cuantos items recientes de la playlist de uploads mirar
+                                           # por pagina (50 es el maximo que permite la API y no
+                                           # cuesta cuota extra pedir 50 en vez de menos)
+DEEP_SCAN_INTERVAL_SECONDS = 60 * 60      # cada cuanto se hace, por canal, un escaneo mas profundo
+                                           # (varias paginas) de la playlist de uploads. Canales muy
+                                           # activos (ej. ESPN Fans) pueden "enterrar" un stream
+                                           # programado bajo decenas de subidas normales en pocas
+                                           # horas, sobre todo si hubo un corte en el monitoreo; con
+                                           # solo 1 pagina (50 items) ese stream se perderia para
+                                           # siempre. Este escaneo profundo es la red de seguridad.
+DEEP_SCAN_MAX_PAGES = 4                   # 4 paginas x 50 = hasta 200 items hacia atras, 4 unidades
+                                           # de cuota por canal en vez de 1 (solo cuando toca)
 
 AIRTABLE_API = "https://api.airtable.com/v0"
 YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
@@ -195,18 +206,31 @@ def get_channels_info(channel_ids):
     return info
 
 
-def get_recent_video_ids_for_playlist(playlist_id, max_items=MAX_UPLOADS_PER_CHANNEL_CHECK):
+def get_recent_video_ids_for_playlist(playlist_id, max_items=MAX_UPLOADS_PER_CHANNEL_CHECK, max_pages=1):
+    """Trae los video IDs mas recientes de la playlist de uploads de un canal.
+    Por defecto mira 1 sola pagina (1 unidad de cuota). Con max_pages > 1 pagina
+    hacia atras (1 unidad de cuota por pagina adicional) para el escaneo profundo
+    periodico, que evita perder streams enterrados bajo muchas subidas normales."""
     video_ids = []
-    data = yt_get(
-        "playlistItems",
-        part="contentDetails",
-        playlistId=playlist_id,
-        maxResults=min(max_items, 50),
-    )
-    for item in data.get("items", []):
-        vid = item["contentDetails"].get("videoId")
-        if vid:
-            video_ids.append(vid)
+    page_token = None
+    pages_fetched = 0
+    while pages_fetched < max_pages:
+        kwargs = {
+            "part": "contentDetails",
+            "playlistId": playlist_id,
+            "maxResults": min(max_items, 50),
+        }
+        if page_token:
+            kwargs["pageToken"] = page_token
+        data = yt_get("playlistItems", **kwargs)
+        for item in data.get("items", []):
+            vid = item["contentDetails"].get("videoId")
+            if vid:
+                video_ids.append(vid)
+        pages_fetched += 1
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
     return video_ids
 
 
@@ -357,14 +381,31 @@ def main():
     }
 
     new_video_ids_to_create = []
+    channels_deep_scanned_this_run = set()
     for cid in channel_ids:
         info = channels_info.get(cid)
         if not info:
             continue
+        # Canales muy activos (ej. ESPN Fans) pueden subir decenas de videos
+        # normales en pocas horas, enterrando un stream programado mas alla de
+        # la primera pagina de la playlist de uploads, sobre todo si hubo un
+        # corte en el monitoreo. Cada DEEP_SCAN_INTERVAL_SECONDS le damos a
+        # ese canal una mirada mas profunda (varias paginas) para no perder
+        # nada; el resto de las corridas usan 1 sola pagina (barato).
+        channel_record = channel_record_by_id.get(cid)
+        last_deep_scan_raw = channel_record["fields"].get("Last Deep Scan") if channel_record else None
+        last_deep_scan_dt = _parse_airtable_timestamp(last_deep_scan_raw) if last_deep_scan_raw else None
+        needs_deep_scan = (
+            last_deep_scan_dt is None
+            or (now_epoch - last_deep_scan_dt.timestamp()) >= DEEP_SCAN_INTERVAL_SECONDS
+        )
+        max_pages = DEEP_SCAN_MAX_PAGES if needs_deep_scan else 1
         try:
-            recent_ids = get_recent_video_ids_for_playlist(info["uploads_playlist_id"])
+            recent_ids = get_recent_video_ids_for_playlist(info["uploads_playlist_id"], max_pages=max_pages)
         except requests.HTTPError:
             continue
+        if needs_deep_scan:
+            channels_deep_scanned_this_run.add(cid)
         for vid in recent_ids:
             if vid not in existing_video_ids:
                 new_video_ids_to_create.append((vid, cid))
@@ -429,6 +470,8 @@ def main():
         if rec["fields"].get("Jornada Start Date") != today_local_date_str:
             fields_update["Subscribers at Jornada Start"] = info["subscriber_count"]
             fields_update["Jornada Start Date"] = today_local_date_str
+        if cid in channels_deep_scanned_this_run:
+            fields_update["Last Deep Scan"] = now_iso
         channel_updates.append({"id": rec["id"], "fields": fields_update})
     if channel_updates:
         airtable_update(TBL_CHANNELS, channel_updates)
