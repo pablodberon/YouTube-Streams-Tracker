@@ -1,3 +1,29 @@
+> **Actualización 4: streams "enterrados" en canales muy activos (ej. ESPN Fans).**
+> Detectamos que el descubrimiento de streams (que mira la playlist de uploads
+> de cada canal) solo miraba los últimos 15 ítems. Canales que suben mucho
+> contenido normal (ESPN Fans tiene ~74.000 videos) pueden enterrar un stream
+> programado más allá de esa ventana en pocas horas, y el stream se perdía
+> para siempre. Se hicieron 3 cambios en `yt_tracker.py`, en capas, de más
+> barata a más confiable:
+>
+> 1. **Cada corrida:** ahora mira 50 ítems en vez de 15 (gratis, es el máximo
+>    por página de la API).
+> 2. **Cada 1 hora por canal:** un "escaneo profundo" de hasta 4 páginas (200
+>    ítems hacia atrás). Costo: ~4 unidades de cuota por canal, 1 vez por hora.
+> 3. **Una vez por día por canal:** una reconciliación contra `search.list`
+>    con `eventType=upcoming` y `eventType=live`, que es el equivalente oficial
+>    exacto a lo que ves en la pestaña `/streams` del canal — no depende para
+>    nada de cuántos videos normales subió el canal entre medio. Costo: 100
+>    unidades por llamada x 2 llamadas x 11 canales = 2.200 unidades, 1 vez
+>    por día (no se puede hacer en cada corrida: haciéndolo cada 5 minutos
+>    costaría ~37.000 unidades/día, muy por encima del límite gratis de
+>    10.000/día).
+>
+> Con esto, ningún stream debería quedar sin detectarse por más de 24 horas en
+> el peor caso, y normalmente mucho antes (apenas pasa el escaneo profundo
+> horario). Se agregaron 2 campos nuevos en Channels para trackear esto sin
+> depender de archivos locales: `Last Deep Scan` y `Last Reconcile Date`.
+
 > **Actualización 3 (importante): el cron nativo de GitHub dejó de ser confiable.**
 > Detectamos que el disparador `schedule` de `tracker.yml` (el `*/5 12-23,0-4 * * *`)
 > empezó a saltear corridas por horas enteras (vimos huecos de 6-14 horas sin
