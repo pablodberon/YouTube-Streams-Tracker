@@ -1,0 +1,34 @@
+name: YouTube VOD - Consolidacion diaria
+
+on:
+  schedule:
+    # Respaldo nativo (ver nota en vod_tracker.yml). El disparador real es un
+    # cronjob externo a las 04:05 hora Argentina = 07:05 UTC, un rato despues
+    # de la corrida horaria de las 04:00 para que ese snapshot ya este
+    # guardado antes de purgar VOD Snapshots.
+    - cron: "5 7 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: yt-vod-daily
+  cancel-in-progress: false
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Consolidar VOD Daily y purgar VOD Snapshots
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+        run: python3 yt_vod_daily_consolidate.py

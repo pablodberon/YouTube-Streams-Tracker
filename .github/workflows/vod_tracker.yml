@@ -1,0 +1,35 @@
+name: YouTube VOD Tracker
+
+on:
+  schedule:
+    # Respaldo nativo: poco confiable para intervalos frecuentes (ver nota en
+    # tracker.yml / GITHUB_SETUP.md). El disparador real es un cronjob externo
+    # (cron-job.org) que llama a workflow_dispatch cada hora, las 24 horas
+    # (a diferencia de los streams en vivo, el contenido on-demand no tiene
+    # una "ventana horaria" fija).
+    - cron: "7 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: yt-vod-tracker
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Medir vistas de contenido VOD
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+        run: python3 yt_vod_tracker.py
